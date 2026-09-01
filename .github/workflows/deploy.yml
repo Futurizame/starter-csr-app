@@ -1,0 +1,42 @@
+name: Deploy
+
+# Tag pushes are the only trigger. The AWS role's trust policy is scoped to
+# refs/tags/v*, so a workflow edited on a branch cannot obtain credentials.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # required to create the GitHub release
+  id-token: write # required to request the OIDC token
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      # Publishing only. Infrastructure changes are a deliberate local
+      # `cdk deploy` by someone holding credentials, never a tag build. The
+      # deploy role's only CloudFormation access is DescribeStacks on this
+      # stack, which is how deploy.sh resolves the bucket and distribution.
+      - run: scripts/deploy.sh
+
+      - run: gh release create "$GITHUB_REF_NAME" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

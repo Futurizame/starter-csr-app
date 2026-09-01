@@ -1,0 +1,31 @@
+name: CI
+
+# Disabled: nothing triggers this automatically, and `workflow_dispatch` keeps it
+# runnable from the Actions tab rather than deleting it.
+#
+# Releases are still verified. deploy.yml re-runs this exact sequence — lint,
+# typecheck, test, build — before it touches AWS, and it does so on the tagged
+# commit rather than trusting that a branch check passed earlier. What is lost is
+# the check on pull requests and on pushes to main.
+#
+# To re-enable, uncomment the two triggers below.
+on:
+  workflow_dispatch:
+  # pull_request:
+  # push:
+  #   branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build

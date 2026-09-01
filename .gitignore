@@ -1,0 +1,20 @@
+.DS_Store
+.env
+.env.*
+/node_modules/
+
+# React Router
+/.react-router/
+/build/
+
+# CDK
+/infra/cdk.out/
+/infra/.cdk.staging/
+
+# Never commit credentials
+credentials.sh
+
+# Editors
+.idea
+.vscode/*
+!.vscode/extensions.json

@@ -1,0 +1,21 @@
+{
+  "name": "infra",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "typecheck": "tsc",
+    "test": "tsx --test test/*.test.ts",
+    "synth": "cdk synth",
+    "synth:offline": "cdk synth -c account=000000000000",
+    "diff": "cdk diff",
+    "deploy": "cdk deploy"
+  },
+  "devDependencies": {
+    "aws-cdk": "2.1139.0",
+    "tsx": "^4.23.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.266.0",
+    "constructs": "^10.5.0"
+  }
+}

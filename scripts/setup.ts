@@ -70,6 +70,12 @@ const assumeDefaults = process.argv.includes("--yes");
 const bold = (text: string) => `\x1b[1m${text}\x1b[0m`;
 const dim = (text: string) => `\x1b[2m${text}\x1b[0m`;
 
+/** "4m30s" — how long a wait has been going, for a heartbeat line. */
+function elapsed(since: number): string {
+  const seconds = Math.round((Date.now() - since) / 1000);
+  return `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, "0")}s`;
+}
+
 const TOTAL_STEPS = 5;
 
 /** How far the run got. Read by main()'s catch to describe what was left behind. */
@@ -800,10 +806,10 @@ async function delegated(domain: string, expected: string[]): Promise<boolean> {
  * until the delegation is visible. Never rejects: the deploy is the thing that succeeds
  * or fails, and this only exists to unblock it.
  *
- * The block is reprinted on every poll. CDK and this function share one terminal, and a
- * single printout gets scrolled away by stack events within seconds — which previously
- * meant going to the Route53 console to read nameservers this script had already
- * fetched. `--progress=errors-only` on the deploy keeps that scroll to a minimum.
+ * The block is printed once, then followed by a one-line heartbeat. CDK and this
+ * function share one terminal, so `--progress=errors-only` on the deploy keeps stack
+ * events from scrolling the nameservers away; the heartbeat says the wait is still
+ * alive without reprinting four hostnames every 30 seconds.
  */
 async function publishNameservers(domain: string, done: () => boolean): Promise<void> {
   while (!hostedZoneId(domain)) {
@@ -812,18 +818,61 @@ async function publishNameservers(domain: string, done: () => boolean): Promise<
   }
 
   const servers = nameservers(domain);
+  const started = Date.now();
+  let printed = false;
 
   while (!done()) {
     if (await delegated(domain, servers)) {
       console.log(`\n  ${domain} is delegated. The certificate can validate now.\n`);
       return;
     }
-    console.log(`\n${bold(`Waiting on the delegation for ${domain}`)}`);
-    console.log(`  Set these four nameservers at the registrar:`);
-    for (const server of servers) console.log(`    ${server}`);
-    console.log(dim(`  Namecheap > Domain List > ${domain} > Manage > Nameservers > Custom DNS`));
-    console.log(dim(`  The deploy is paused at the certificate until they go live.\n`));
+
+    if (!printed) {
+      console.log(`\n${bold(`Waiting on the delegation for ${domain}`)}`);
+      console.log(`  Set these four nameservers at the registrar:`);
+      for (const server of servers) console.log(`    ${server}`);
+      console.log(dim(`  Namecheap > Domain List > ${domain} > Manage > Nameservers > Custom DNS`));
+      console.log(dim(`  The deploy is paused at the certificate until they go live.\n`));
+      printed = true;
+    } else {
+      console.log(dim(`  still waiting on ${domain} (${elapsed(started)})`));
+    }
+
     await sleep(30_000);
+  }
+}
+
+/**
+ * Reports what CloudFormation currently has in flight, while `cdk deploy` runs quietly.
+ *
+ * The deploy uses --progress=errors-only so its per-resource events do not scroll the
+ * nameserver block away. The cost is minutes of silence at the slow resources — ACM
+ * waiting on DNS validation, then CloudFront propagating — where an unattended terminal
+ * is indistinguishable from a hang. Reads the resources rather than the event stream:
+ * events are history and mostly finished, resources are what is happening now.
+ */
+async function reportStackProgress(stack: string, done: () => boolean): Promise<void> {
+  const started = Date.now();
+
+  while (!done()) {
+    await sleep(30_000);
+    if (done()) return;
+
+    const raw = capture("aws", [
+      "cloudformation",
+      "describe-stack-resources",
+      "--stack-name",
+      stack,
+      "--query",
+      "StackResources[?ends_with(ResourceStatus, `_IN_PROGRESS`)].LogicalResourceId",
+      "--output",
+      "text",
+    ]);
+
+    const working = (raw ?? "").split(/\s+/).filter(Boolean);
+    if (working.length) {
+      console.log(dim(`  cloudformation: ${working.join(", ")} (${elapsed(started)})`));
+    }
   }
 }
 
@@ -874,16 +923,19 @@ async function createInfrastructure(a: Answers, owner: string): Promise<void> {
 
   run("npx", ["cdk", "bootstrap", ...context, "--require-approval", "never"], infraDir);
 
-  if (a.domain) {
-    let finished = false;
-    const deploy = deployInBackground(context).finally(() => {
-      finished = true;
-    });
-    await Promise.all([deploy, publishNameservers(a.domain, () => finished)]);
-  } else {
-    // Nothing to delegate, so nothing to publish alongside the deploy.
-    await deployInBackground(context);
-  }
+  let finished = false;
+  const done = () => finished;
+  const deploy = deployInBackground(context).finally(() => {
+    finished = true;
+  });
+
+  // With a domain the delegation has to be published and waited on first; without one
+  // there is nothing to delegate. Either way the deploy is reported on until it ends.
+  const alongside = a.domain
+    ? publishNameservers(a.domain, done).then(() => reportStackProgress(a.repo, done))
+    : reportStackProgress(a.repo, done);
+
+  await Promise.all([deploy, alongside]);
 
   const roleArn = stackOutput(a.repo, "DeployRoleArn");
   if (!roleArn) fail(`${a.repo} deployed but has no DeployRoleArn output.`);
